@@ -9,8 +9,10 @@ import aiohttp
 from dotenv import load_dotenv
 import git
 from joblib import Parallel, delayed
+from sqlalchemy import engine
 
 load_dotenv()
+engine = engine.create_engine('sqlite:///dist/packages.db')
 
 
 def get_vcpkg_data():
@@ -36,13 +38,15 @@ def filter_dependencies(dependencies):
         {"name": "vcpkg-cmake-config", "host": True},
         {"name": "vcpkg-msbuild", "host": True, "platform": "windows"},
         {"name": "vcpkg-msbuild", "host": False, "platform": "windows"},
+        {}
     ]
     if type(dependencies) is not list:
         return []
     return [
-        dep
+        {"name": dep}
         for dep in dependencies
         if dep not in entries_to_remove
+        and type(dep) is not dict
     ]
 
 
@@ -124,7 +128,7 @@ async def git_data(df):
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "curl/7.64.1"
     }
-    connector = aiohttp.TCPConnector(limit=50)
+    connector = aiohttp.TCPConnector(limit=10)
     async with aiohttp.ClientSession(
         headers=headers,
         connector=connector
@@ -194,21 +198,62 @@ def get_versions_parallel(df):
     return df.merge(results_df, on='git_short', how='left')
 
 
+def list2Str(lst):
+    if type(lst) is list:  # apply conversion to list columns
+        return ";".join(map(str, lst))
+    else:
+        return lst
+
+
+def sql_lite_crap(df):
+    """SQLite does not support list columns,
+    so we need to convert them to strings"""
+
+    df["dependencies"] = df["dependencies"].apply(
+        lambda x: dumps(x)
+    )
+    df["description"] = df["description"].apply(
+        lambda x: dumps(x)
+    )
+    df["default_features"] = df["default_features"].apply(
+        lambda x: dumps(x)
+    )
+    df["features"] = df["features"].apply(
+        lambda x: dumps(x)
+    )
+    df["maintainers"] = df["maintainers"].apply(
+        lambda x: dumps(x)
+    )
+    df["supports"] = df["supports"].apply(
+        lambda x: dumps(x)
+    )
+    df["description"] = df["description"].apply(
+        lambda x: dumps(x)
+    )
+    return df
+
+
 def main():
     data = get_vcpkg_data()
     packages = get_packages(data)
     df = build_dataframe(packages)
     overrides, df = get_overrides(df)
     df = override_dataframe(df, overrides)
-    # df = run(git_data(df))
-    # df = get_versions_parallel(df)
-    print(df)
+    df = run(git_data(df))
+    df = get_versions_parallel(df)
     with open('dist/index_tmp.json', "w") as f:
         f.write(df.to_json(
             orient='records',
             index='false',
             indent=2,
         ).replace('\\/', '/'))
+
+    df = sql_lite_crap(df)
+    df.to_sql(
+        'packages',
+        con=engine,
+        if_exists='replace',
+    )
 
 
 if __name__ == '__main__':
